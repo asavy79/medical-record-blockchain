@@ -2,33 +2,76 @@
 
 ---
 
+## Architecture Overview
+
+The backend serves as a **metadata router and off-chain cache only**. It never holds private keys and never submits transactions to the blockchain.
+
+- **Frontend → Blockchain (direct):** All chain writes (`grantAccess`, `revokeAccess`, `shareKeyWithDoctor`) are signed and submitted by the user's wallet via `ethers.js`. The smart contract uses `msg.sender` for identity, so transactions must originate from the user.
+- **Frontend → Backend (JWT-authenticated):** User profiles, record metadata, file storage pointers, and cached permission lookups.
+- **Backend → Blockchain (read-only listener):** A `web3.py` event listener watches for `AccessGranted`, `AccessRevoked`, and `KeyShared` events and syncs the off-chain `RecordPermission` table automatically.
+
+### Authentication
+
+All backend routes (except `POST /patients` and `POST /doctors` registration) require a valid **JWT Bearer token** in the `Authorization` header. Tokens are issued at login and contain the user's `id` and `role`.
+
+### Local Development
+
+- **Anvil** (Foundry) runs a local Ethereum chain at `localhost:8545` with 10 pre-funded accounts and known private keys.
+- **Forge** deploys `MedicalAccessRegistry` to the local chain via `forge script`.
+- The React frontend connects to `localhost:8545` using Anvil's test accounts as wallets.
+- The FastAPI backend connects to `localhost:8545` as an event listener only.
+
+---
+
 ## API Routes
 
 ### Records
 
-| Method | Route                                        | Description                                                                                                                |
-| ------ | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `POST` | `/patients/{patient_id}/records`             | Create a new record entry; accepts file storage location + encrypted master key from frontend; calls `addRecord` on-chain  |
-| `GET`  | `/patients/{patient_id}/records`             | Fetch all record IDs + storage locations + shared secrets for the requesting user; calls `checkAccess` on-chain per record |
-| `GET`  | `/patients/{patient_id}/records/{record_id}` | Fetch a single record's metadata and storage location                                                                      |
+| Method | Route                                        | Description                                                                                                    |
+| ------ | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/patients/{patient_id}/records`             | Create a new record entry; accepts file storage location + encrypted master key. Patient-only (JWT-enforced).  |
+| `GET`  | `/patients/{patient_id}/records`             | Fetch all record IDs + metadata + storage locations for the patient. Access checked against off-chain cache.   |
+| `GET`  | `/patients/{patient_id}/records/{record_id}` | Fetch a single record's metadata and storage location.                                                         |
 
-### Permissions
+> Records are **immutable** once created. There are no update or delete routes.
 
-| Method   | Route                                                                | Description                                                                                                                                                                                             |
-| -------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST`   | `/patients/{patient_id}/records/{record_id}/permissions`             | Grant a doctor access; accepts `doctor_id` + patient's encrypted master key (decrypted on frontend first, then re-encrypted with shared secret before hitting this route); calls `grantAccess` on-chain |
-| `DELETE` | `/patients/{patient_id}/records/{record_id}/permissions/{doctor_id}` | Revoke a doctor's access; calls `revokeAccess` on-chain                                                                                                                                                 |
-| `GET`    | `/patients/{patient_id}/records/{record_id}/permissions`             | List all doctors who currently have access to a record                                                                                                                                                  |
+### Permissions (off-chain cache — read-only)
+
+The backend does **not** grant or revoke permissions. Those operations happen directly on-chain from the frontend. The backend only exposes a read endpoint over its event-synced cache.
+
+| Method | Route                                                    | Description                                                                        |
+| ------ | -------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `GET`  | `/patients/{patient_id}/records/{record_id}/permissions` | List all doctors who currently have access to a record (read from off-chain cache). |
 
 ### Users
 
-| Method | Route                    | Description                                                                                                                      |
-| ------ | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `POST` | `/patients`              | Register a new patient; stores id, public key, name, email                                                                       |
-| `GET`  | `/patients/{patient_id}` | Fetch patient profile + public key                                                                                               |
-| `POST` | `/doctors`               | Register a new doctor                                                                                                            |
-| `GET`  | `/doctors/{doctor_id}`   | Fetch doctor profile + public key; needed by frontend when computing the shared secret before calling the permissions POST route |
-| `GET`  | `/doctors`               | Search/list doctors (so a patient can find a doctor to grant access to)                                                          |
+| Method | Route                    | Description                                                                                           |
+| ------ | ------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `POST` | `/patients`              | Register a new patient; stores name, email, public key, wallet address. No JWT required.              |
+| `GET`  | `/patients/{patient_id}` | Fetch patient profile + public key.                                                                   |
+| `POST` | `/doctors`               | Register a new doctor; stores name, email, public key, wallet address. No JWT required.               |
+| `GET`  | `/doctors/{doctor_id}`   | Fetch doctor profile + public key. Needed by frontend to compute the ECDH shared secret.              |
+| `GET`  | `/doctors`               | Search/list doctors (so a patient can find a doctor to grant access to).                              |
+
+### Auth
+
+| Method | Route          | Description                                                                                 |
+| ------ | -------------- | ------------------------------------------------------------------------------------------- |
+| `POST` | `/auth/login`  | Accepts wallet signature challenge; returns a JWT if the signature matches a registered user. |
+
+---
+
+## On-Chain Operations (Frontend → Blockchain)
+
+These are **not** backend routes. They are smart contract calls made directly from the React frontend using `ethers.js`, signed by the user's wallet.
+
+| Contract Function                                              | Caller  | Description                                                        |
+| -------------------------------------------------------------- | ------- | ------------------------------------------------------------------ |
+| `grantAccess(doctor)`                                          | Patient | Grant a doctor profile-level access. Emits `AccessGranted`.        |
+| `revokeAccess(doctor)`                                         | Patient | Revoke a doctor's access. Emits `AccessRevoked`.                   |
+| `shareKeyWithDoctor(patient, recordId, doctor, encryptedKey)`  | Patient | Store the re-encrypted file key for a specific doctor and record.  |
+| `getDoctorKey(patient, recordId)`                               | Doctor  | Retrieve the caller's encrypted file key for a record (view call). |
+| `checkAccess(patient, doctor)`                                  | Any     | Check whether a doctor has access to a patient (view call).        |
 
 ---
 
@@ -36,25 +79,25 @@
 
 ### Patient
 
-| Column       | Type      | Notes                              |
-| ------------ | --------- | ---------------------------------- |
-| `id`         | UUID, PK  |                                    |
-| `name`       | VARCHAR   |                                    |
-| `email`      | VARCHAR   | Unique                             |
-| `public_key` | TEXT      | ECC public key, hex or PEM encoded |
-| `created_at` | TIMESTAMP |                                    |
+| Column            | Type      | Notes                              |
+| ----------------- | --------- | ---------------------------------- |
+| `id`              | UUID, PK  |                                    |
+| `name`            | VARCHAR   |                                    |
+| `email`           | VARCHAR   | Unique                             |
+| `wallet_address`  | VARCHAR   | Ethereum address, unique           |
+| `public_key`      | TEXT      | ECC public key, hex or PEM encoded |
+| `created_at`      | TIMESTAMP |                                    |
 
 ### Doctor
 
-| Column       | Type      | Notes                              |
-| ------------ | --------- | ---------------------------------- |
-| `id`         | UUID, PK  |                                    |
-| `name`       | VARCHAR   |                                    |
-| `email`      | VARCHAR   | Unique                             |
-| `public_key` | TEXT      | ECC public key, hex or PEM encoded |
-| `created_at` | TIMESTAMP |                                    |
-
-> **Note:** These two tables may be collapsed into a single `users` table with a `role` enum (`patient`, `doctor`). The cryptographic treatment is identical and it simplifies foreign keys.
+| Column            | Type      | Notes                              |
+| ----------------- | --------- | ---------------------------------- |
+| `id`              | UUID, PK  |                                    |
+| `name`            | VARCHAR   |                                    |
+| `email`           | VARCHAR   | Unique                             |
+| `wallet_address`  | VARCHAR   | Ethereum address, unique           |
+| `public_key`      | TEXT      | ECC public key, hex or PEM encoded |
+| `created_at`      | TIMESTAMP |                                    |
 
 ### PatientRecord
 
@@ -66,26 +109,29 @@
 | `file_location`        | TEXT      | Cloud storage URI (S3, GCS, etc.)                  |
 | `encrypted_master_key` | TEXT      | Master key encrypted with the patient's public key |
 | `created_at`           | TIMESTAMP |                                                    |
-| `updated_at`           | TIMESTAMP |                                                    |
 
-### RecordPermission _(optional — off-chain mirror of on-chain state)_
+### RecordPermission (off-chain cache of on-chain state)
 
-| Column       | Type                | Notes                              |
-| ------------ | ------------------- | ---------------------------------- |
-| `id`         | UUID, PK            |                                    |
-| `record_id`  | UUID, FK            | References `PatientRecord`         |
-| `doctor_id`  | UUID, FK            | References `Doctor`                |
-| `granted_at` | TIMESTAMP           |                                    |
-| `revoked_at` | TIMESTAMP, nullable | Soft delete; enables audit history |
+| Column       | Type                | Notes                                                      |
+| ------------ | ------------------- | ---------------------------------------------------------- |
+| `id`         | UUID, PK            |                                                            |
+| `record_id`  | UUID, FK            | References `PatientRecord`                                 |
+| `doctor_id`  | UUID, FK            | References `Doctor`                                        |
+| `granted_at` | TIMESTAMP           | Set when `AccessGranted` event is received                 |
+| `revoked_at` | TIMESTAMP, nullable | Set when `AccessRevoked` event is received; enables audit  |
 
-> **Note:** This table is optional since the source of truth lives on-chain, but it enables fast `GET /permissions` lookups without hitting the chain every time and supports audit logging.
+> Source of truth lives on-chain. This table is populated by the backend's event listener and serves as a fast read cache for `GET /permissions`.
 
 ---
 
 ## Design Notes
 
-- **Never accept a raw private key over the wire.** The `POST /permissions` route should only ever receive the already-computed `joined_key` (the master key re-encrypted with the ECDH shared secret). All private key operations must happen exclusively on the frontend.
+- **Private keys never leave the frontend.** All blockchain transactions are signed client-side. The backend never submits transactions or handles private keys.
 
-- **`encrypted_master_key` on `PatientRecord`** is encrypted with the patient's public key so only they can decrypt it client-side. When granting access, the frontend decrypts this locally and re-encrypts it with the ECDH shared secret before POSTing to the permissions route.
+- **`encrypted_master_key` on `PatientRecord`** is encrypted with the patient's public key so only they can decrypt it client-side. When granting access, the frontend decrypts this locally, computes an ECDH shared secret with the doctor's public key, re-encrypts the master key, and calls `shareKeyWithDoctor` on-chain directly.
 
-- **Consider indexing `metadata->>'category'`** in Postgres. Your design mentions records being filtered and displayed by category — keeping that in Postgres rather than on-chain makes `GET /records` filtering fast and cheap.
+- **Only patients can create records.** The `POST /records` route is restricted to the patient identified by `{patient_id}` in the JWT.
+
+- **The backend event listener** connects to the chain via `web3.py`, subscribes to `AccessGranted`, `AccessRevoked`, and `KeyShared` events, and upserts rows in `RecordPermission` accordingly. On startup it replays missed events from the last processed block.
+
+- **Consider indexing `metadata->>'category'`** in Postgres for fast filtered queries on `GET /records`.
