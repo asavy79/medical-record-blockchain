@@ -36,6 +36,21 @@ async def create_doctor(body: DoctorCreate, db: AsyncSession = Depends(get_db)):
     return doctor
 
 
+@router.get("/by-wallet/{wallet_address}", response_model=DoctorResponse)
+async def get_doctor_by_wallet(
+    wallet_address: str,
+    db: AsyncSession = Depends(get_db),
+    _current_user: dict = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Doctor).where(Doctor.wallet_address == wallet_address.lower())
+    )
+    doctor = result.scalar_one_or_none()
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+    return doctor
+
+
 @router.get("/{doctor_id}", response_model=DoctorResponse)
 async def get_doctor(
     doctor_id: uuid.UUID,

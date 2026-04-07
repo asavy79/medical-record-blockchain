@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -6,7 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from database import init_db
-from routes import auth, doctors, patients
+from routes import auth, doctors, invites, patients, permissions, records
+from services.event_listener import poll_events
 
 # Import models so Base.metadata knows about all tables
 import models  # noqa: F401
@@ -16,7 +18,19 @@ import models  # noqa: F401
 async def lifespan(app: FastAPI):
     await init_db()
     print("Database tables created")
+
+    # Start blockchain event listener as a background task
+    app_state: dict = {"last_block": 0}
+    event_task = asyncio.create_task(poll_events(app_state))
+
     yield
+
+    # Cancel the event listener on shutdown
+    event_task.cancel()
+    try:
+        await event_task
+    except asyncio.CancelledError:
+        pass
     print("Shutting down...")
 
 
@@ -38,6 +52,9 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(patients.router)
 app.include_router(doctors.router)
+app.include_router(records.router)
+app.include_router(invites.router)
+app.include_router(permissions.router)
 
 
 @app.get("/health")

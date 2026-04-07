@@ -1,17 +1,24 @@
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useWallet } from '../context/WalletContext';
 import './Navbar.css';
 
 export default function Navbar() {
   const { currentUser, logout } = useAuth();
+  const { walletAddress, disconnect } = useWallet();
   const navigate = useNavigate();
 
   function handleLogout() {
     logout();
+    disconnect();
     navigate('/');
   }
 
   const isPatient = currentUser?.role === 'patient';
+
+  function truncAddr(addr: string) {
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+  }
 
   return (
     <nav className="navbar">
@@ -34,6 +41,7 @@ export default function Navbar() {
             <span className="navbar-user-name">{currentUser?.name}</span>
             <span className={`navbar-role-badge ${isPatient ? 'patient' : 'doctor'}`}>
               {isPatient ? 'Patient' : 'Doctor'}
+              {walletAddress && <> · {truncAddr(walletAddress)}</>}
             </span>
           </div>
         </div>

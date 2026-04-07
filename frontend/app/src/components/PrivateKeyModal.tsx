@@ -1,31 +1,99 @@
-import { useState, type FormEvent } from 'react';
-import { type MedRecord, MOCK_PRIVATE_KEY } from '../data/mockData';
+import { useState } from 'react';
+import { useWallet } from '../context/WalletContext';
+import { useAuth } from '../context/AuthContext';
+import * as api from '../services/api';
+import * as cryptoService from '../services/crypto';
+import * as contractService from '../services/contract';
 import './PrivateKeyModal.css';
 
 interface Props {
-  record: MedRecord;
+  record: api.RecordResponse;
   onClose: () => void;
 }
 
 export default function PrivateKeyModal({ record, onClose }: Props) {
-  const [key, setKey] = useState('');
+  const { privateKey, signer } = useWallet();
+  const { currentUser } = useAuth();
   const [unlocked, setUnlocked] = useState(false);
+  const [decryptedContent, setDecryptedContent] = useState<string>('');
+  const [decryptedBlob, setDecryptedBlob] = useState<Blob | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  function handleUnlock(e: FormEvent) {
-    e.preventDefault();
+  const isPatient = currentUser?.role === 'patient';
+
+  async function handleUnlock() {
+    if (!privateKey || !currentUser) return;
     setError('');
     setLoading(true);
-    // Simulate decryption delay
-    setTimeout(() => {
-      if (key.trim() === MOCK_PRIVATE_KEY) {
-        setUnlocked(true);
+
+    try {
+      const privKeyBytes = cryptoService.hexToBytes(privateKey);
+
+      // 1. Fetch the encrypted file from backend
+      const encryptedFile = new Uint8Array(
+        await api.getRecordFile(record.patient_id, record.id)
+      );
+
+      let masterKeyBytes: Uint8Array;
+
+      if (isPatient) {
+        // Patient: decrypt master key via ECIES (encrypted to their own public key)
+        const encMasterKey = cryptoService.hexToBytes(record.encrypted_master_key);
+        masterKeyBytes = await cryptoService.eciesDecrypt(privKeyBytes, encMasterKey);
       } else {
-        setError('Invalid private key. Access denied.');
+        // Doctor: get encrypted key from on-chain, then decrypt via ECDH shared secret
+        if (!signer) throw new Error('No signer available');
+
+        const onChainRecordId = cryptoService.uuidToUint256(record.id);
+        const patient = await api.getPatient(record.patient_id);
+
+        // Get the re-encrypted key from the smart contract
+        const encKeyHex = await contractService.getDoctorKey(signer, patient.wallet_address, onChainRecordId);
+        if (!encKeyHex || encKeyHex === '0x' || encKeyHex === '') {
+          throw new Error('No shared key found on-chain. The patient has not shared this record key with you yet.');
+        }
+
+        // Get patient's public key for ECDH
+        const patientPubKey = cryptoService.hexToBytes(patient.public_key);
+
+        // Derive shared secret
+        const sharedKey = cryptoService.ecdhDeriveKey(privKeyBytes, patientPubKey);
+
+        // Decrypt the re-encrypted master key
+        const encKeyBytes = cryptoService.hexToBytes(encKeyHex);
+        masterKeyBytes = await cryptoService.aesGcmDecrypt(sharedKey, encKeyBytes);
       }
-      setLoading(false);
-    }, 800);
+
+      // 2. Decrypt the file with the master key
+      const fileBytes = await cryptoService.aesGcmDecrypt(masterKeyBytes, encryptedFile);
+
+      // 3. Try to display as text, or offer as download
+      const blob = new Blob([fileBytes.buffer as ArrayBuffer]);
+      setDecryptedBlob(blob);
+
+      try {
+        const text = new TextDecoder('utf-8', { fatal: true }).decode(fileBytes);
+        setDecryptedContent(text);
+      } catch {
+        setDecryptedContent('[Binary file — use Download button]');
+      }
+
+      setUnlocked(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Decryption failed.');
+    }
+    setLoading(false);
+  }
+
+  function handleDownload() {
+    if (!decryptedBlob) return;
+    const url = URL.createObjectURL(decryptedBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = record.metadata.filename;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -39,8 +107,14 @@ export default function PrivateKeyModal({ record, onClose }: Props) {
             </svg>
           </div>
           <div>
-            <h2 className="modal-title">{record.title}</h2>
-            <p className="modal-meta">{record.type} &nbsp;·&nbsp; {record.date} &nbsp;·&nbsp; {record.size}</p>
+            <h2 className="modal-title">{record.metadata.filename}</h2>
+            <p className="modal-meta">
+              {record.metadata.category} &nbsp;·&nbsp; {record.metadata.file_type} &nbsp;·&nbsp;
+              {record.metadata.size_bytes < 1024 * 1024
+                ? `${(record.metadata.size_bytes / 1024).toFixed(0)} KB`
+                : `${(record.metadata.size_bytes / (1024 * 1024)).toFixed(1)} MB`
+              }
+            </p>
           </div>
           <button className="modal-close" onClick={onClose}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -58,36 +132,21 @@ export default function PrivateKeyModal({ record, onClose }: Props) {
               </svg>
             </div>
             <p className="lock-description">
-              This record is encrypted. Enter your private key to decrypt and view the contents.
+              This record is encrypted. Your wallet private key will be used to decrypt it client-side.
+              {!isPatient && ' The patient must have shared the record key with you on-chain.'}
             </p>
-            <form className="key-form" onSubmit={handleUnlock}>
-              <div className="field-group">
-                <label className="field-label">Private Key</label>
-                <input
-                  className="field-input mono"
-                  type="password"
-                  placeholder="0x..."
-                  value={key}
-                  onChange={e => setKey(e.target.value)}
-                  required
-                />
-              </div>
-              {error && <div className="modal-error">{error}</div>}
-              <div className="key-hint">
-                Demo key: <code>0xabc123privatekey</code>
-              </div>
-              <button className="unlock-btn" type="submit" disabled={loading}>
-                {loading
-                  ? <><span className="spinner" /> Decrypting…</>
-                  : <>
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                      <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>
-                    </svg>
-                    Unlock MedRecord
-                  </>
-                }
-              </button>
-            </form>
+            {error && <div className="modal-error">{error}</div>}
+            <button className="unlock-btn" onClick={handleUnlock} disabled={loading || !privateKey}>
+              {loading
+                ? <><span className="spinner" /> Decrypting...</>
+                : <>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+                  </svg>
+                  Decrypt with Wallet Key
+                </>
+              }
+            </button>
           </div>
         ) : (
           <div className="modal-content-body">
@@ -98,8 +157,8 @@ export default function PrivateKeyModal({ record, onClose }: Props) {
               </svg>
               Decrypted successfully
             </div>
-            <pre className="record-content">{record.content}</pre>
-            <button className="download-btn">
+            <pre className="record-content">{decryptedContent}</pre>
+            <button className="download-btn" onClick={handleDownload}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                 <polyline points="7 10 12 15 17 10"/>

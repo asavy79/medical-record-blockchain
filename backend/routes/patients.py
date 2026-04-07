@@ -36,6 +36,30 @@ async def create_patient(body: PatientCreate, db: AsyncSession = Depends(get_db)
     return patient
 
 
+@router.get("", response_model=list[PatientResponse])
+async def list_patients(
+    db: AsyncSession = Depends(get_db),
+    _current_user: dict = Depends(get_current_user),
+):
+    result = await db.execute(select(Patient))
+    return result.scalars().all()
+
+
+@router.get("/by-wallet/{wallet_address}", response_model=PatientResponse)
+async def get_patient_by_wallet(
+    wallet_address: str,
+    db: AsyncSession = Depends(get_db),
+    _current_user: dict = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Patient).where(Patient.wallet_address == wallet_address.lower())
+    )
+    patient = result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    return patient
+
+
 @router.get("/{patient_id}", response_model=PatientResponse)
 async def get_patient(
     patient_id: uuid.UUID,
