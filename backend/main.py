@@ -1,28 +1,43 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+
 import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from config import settings
+from database import init_db
+from routes import auth, doctors, patients
+
+# Import models so Base.metadata knows about all tables
+import models  # noqa: F401
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic
-    print("Starting up...")
+    await init_db()
+    print("Database tables created")
     yield
-    # Shutdown logic
     print("Shutting down...")
 
 
 app = FastAPI(
-    title="My Async API",
-    description="A FastAPI application",
-    version="1.0.0",
+    title="Medical Records API",
+    description="Blockchain-backed medical records management",
+    version="0.1.0",
     lifespan=lifespan,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.get("/")
-async def root():
-    return {"message": "Hello, World!"}
+app.include_router(auth.router)
+app.include_router(patients.router)
+app.include_router(doctors.router)
 
 
 @app.get("/health")
