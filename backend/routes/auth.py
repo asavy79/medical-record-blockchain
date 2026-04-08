@@ -6,7 +6,7 @@ from fastapi import Depends
 from dependencies import get_db
 from models.doctor import Doctor
 from models.patient import Patient
-from schemas.auth import ChallengeResponse, LoginRequest, LoginResponse
+from schemas.auth import ChallengeResponse, CheckWalletResponse, LoginRequest, LoginResponse
 from services.auth import create_jwt, generate_challenge, verify_wallet_signature
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -47,3 +47,22 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
         )
 
     raise HTTPException(status_code=404, detail="Wallet not registered")
+
+
+@router.get("/check-wallet", response_model=CheckWalletResponse)
+async def check_wallet(wallet_address: str = Query(...), db: AsyncSession = Depends(get_db)):
+    addr = wallet_address.lower()
+
+    result = await db.execute(
+        select(Patient).where(Patient.wallet_address.ilike(addr))
+    )
+    if result.scalar_one_or_none():
+        return CheckWalletResponse(claimed=True, role="patient")
+
+    result = await db.execute(
+        select(Doctor).where(Doctor.wallet_address.ilike(addr))
+    )
+    if result.scalar_one_or_none():
+        return CheckWalletResponse(claimed=True, role="doctor")
+
+    return CheckWalletResponse(claimed=False)

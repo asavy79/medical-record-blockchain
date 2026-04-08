@@ -12,8 +12,9 @@ interface Props {
 }
 
 export default function PrivateKeyModal({ record, onClose }: Props) {
-  const { privateKey, signer } = useWallet();
+  const { signer } = useWallet();
   const { currentUser } = useAuth();
+  const [enteredKey, setEnteredKey] = useState('');
   const [unlocked, setUnlocked] = useState(false);
   const [decryptedContent, setDecryptedContent] = useState<string>('');
   const [decryptedBlob, setDecryptedBlob] = useState<Blob | null>(null);
@@ -23,12 +24,19 @@ export default function PrivateKeyModal({ record, onClose }: Props) {
   const isPatient = currentUser?.role === 'patient';
 
   async function handleUnlock() {
-    if (!privateKey || !currentUser) return;
+    const keyHex = enteredKey.trim();
+    if (!keyHex || !currentUser) return;
     setError('');
     setLoading(true);
 
     try {
-      const privKeyBytes = cryptoService.hexToBytes(privateKey);
+      // Validate key matches connected wallet
+      const derivedPub = cryptoService.derivePublicKey(keyHex);
+      if (derivedPub !== currentUser.public_key) {
+        throw new Error('This private key does not match your connected wallet.');
+      }
+
+      const privKeyBytes = cryptoService.hexToBytes(keyHex);
 
       // 1. Fetch the encrypted file from backend
       const encryptedFile = new Uint8Array(
@@ -132,18 +140,34 @@ export default function PrivateKeyModal({ record, onClose }: Props) {
               </svg>
             </div>
             <p className="lock-description">
-              This record is encrypted. Your wallet private key will be used to decrypt it client-side.
+              This record is encrypted. Enter your private key to decrypt it client-side. Your key will not be stored.
               {!isPatient && ' The patient must have shared the record key with you on-chain.'}
             </p>
+            <div className="key-form">
+              <div className="field-group">
+                <label className="field-label">Private Key</label>
+                <input
+                  className="field-input mono"
+                  type="password"
+                  placeholder="0x..."
+                  value={enteredKey}
+                  onChange={e => setEnteredKey(e.target.value)}
+                  autoComplete="off"
+                />
+              </div>
+              <p className="key-hint">
+                Your Anvil private key starting with <code>0x</code>
+              </p>
+            </div>
             {error && <div className="modal-error">{error}</div>}
-            <button className="unlock-btn" onClick={handleUnlock} disabled={loading || !privateKey}>
+            <button className="unlock-btn" onClick={handleUnlock} disabled={loading || !enteredKey.trim()}>
               {loading
                 ? <><span className="spinner" /> Decrypting...</>
                 : <>
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
                     <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>
                   </svg>
-                  Decrypt with Wallet Key
+                  Decrypt Record
                 </>
               }
             </button>

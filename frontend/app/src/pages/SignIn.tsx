@@ -1,7 +1,8 @@
-import { useState, type FormEvent } from 'react';
+import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useWallet } from '../context/WalletContext';
+import * as api from '../services/api';
 import './SignIn.css';
 
 type Step = 'select-wallet' | 'logging-in' | 'register';
@@ -16,11 +17,40 @@ export default function SignIn() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // Wallet claim status: address → role (or null if unclaimed)
+  const [claimedMap, setClaimedMap] = useState<Map<string, string | null>>(new Map());
+  const [loadingClaims, setLoadingClaims] = useState(true);
+
   // Registration form state
   const [regRole, setRegRole] = useState<'patient' | 'doctor'>('patient');
   const [regName, setRegName] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regSpecialty, setRegSpecialty] = useState('');
+
+  // Check which Anvil accounts are already claimed
+  useEffect(() => {
+    async function checkClaims() {
+      setLoadingClaims(true);
+      const map = new Map<string, string | null>();
+      const results = await Promise.allSettled(
+        anvilAccounts.map(acc => api.checkWallet(acc.address))
+      );
+      results.forEach((result, i) => {
+        const addr = anvilAccounts[i].address.toLowerCase();
+        if (result.status === 'fulfilled' && result.value.claimed) {
+          map.set(addr, result.value.role);
+        } else {
+          map.set(addr, null);
+        }
+      });
+      setClaimedMap(map);
+      setLoadingClaims(false);
+    }
+    checkClaims();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selectedAccount = anvilAccounts[selectedIdx];
+  const selectedClaimed = claimedMap.get(selectedAccount?.address.toLowerCase()) ?? null;
 
   async function handleConnect() {
     setError('');
@@ -35,6 +65,7 @@ export default function SignIn() {
       setLoading(false);
       return;
     }
+
     setStep('logging-in');
     setLoading(false);
   }
@@ -74,8 +105,13 @@ export default function SignIn() {
       } else {
         setError('Registration failed. Check your details.');
       }
-    } catch {
-      setError('Registration failed. Is the backend running?');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('409')) {
+        setError('This wallet is already claimed by another user.');
+      } else {
+        setError('Registration failed. Is the backend running?');
+      }
     }
     setLoading(false);
   }
@@ -112,18 +148,30 @@ export default function SignIn() {
                   value={selectedIdx}
                   onChange={e => setSelectedIdx(Number(e.target.value))}
                 >
-                  {anvilAccounts.map((acc, i) => (
-                    <option key={i} value={i}>
-                      Account {i} — {truncAddr(acc.address)}
-                    </option>
-                  ))}
+                  {anvilAccounts.map((acc, i) => {
+                    const claimed = claimedMap.get(acc.address.toLowerCase());
+                    return (
+                      <option key={i} value={i}>
+                        Account {i} — {truncAddr(acc.address)}
+                        {claimed ? ` (${claimed})` : ' (unclaimed)'}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
               {error && <div className="signin-error">{error}</div>}
 
-              <button className="signin-btn" onClick={handleConnect} disabled={loading}>
-                {loading ? <span className="spinner" /> : 'Connect Wallet'}
+              <button
+                className="signin-btn"
+                onClick={handleConnect}
+                disabled={loading || loadingClaims}
+              >
+                {loading || loadingClaims
+                  ? <span className="spinner" />
+                  : selectedClaimed
+                    ? 'Sign In'
+                    : 'Connect Wallet'}
               </button>
             </div>
 

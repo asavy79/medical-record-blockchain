@@ -5,6 +5,7 @@ import Navbar from '../components/Navbar';
 import PrivateKeyModal from '../components/PrivateKeyModal';
 import InviteModal from '../components/InviteModal';
 import UploadRecordModal from '../components/UploadRecordModal';
+import ShareRecordModal from '../components/ShareRecordModal';
 import * as api from '../services/api';
 import './Dashboard.css';
 
@@ -19,6 +20,7 @@ export default function Dashboard() {
   const [tab, setTab] = useState<Tab>('all');
   const [showInvite, setShowInvite] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
+  const [shareRecord, setShareRecord] = useState<api.RecordResponse | null>(null);
 
   // Records state
   const [records, setRecords] = useState<api.RecordResponse[]>([]);
@@ -257,6 +259,20 @@ export default function Dashboard() {
                     </svg>
                     Click to decrypt
                   </div>
+                  {isPatient && (
+                    <button
+                      className="share-record-btn"
+                      onClick={(e) => { e.stopPropagation(); setShareRecord(rec); }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                        <circle cx="9" cy="7" r="4"/>
+                        <line x1="19" y1="8" x2="19" y2="14"/>
+                        <line x1="22" y1="11" x2="16" y2="11"/>
+                      </svg>
+                      Share
+                    </button>
+                  )}
                 </button>
               ))}
             </div>
@@ -353,6 +369,13 @@ export default function Dashboard() {
       )}
       {showUpload && (
         <UploadRecordModal onClose={() => { setShowUpload(false); loadRecords(); }} />
+      )}
+      {shareRecord && (
+        <ShareRecordModal
+          record={shareRecord}
+          onClose={() => setShareRecord(null)}
+          onShared={() => { setShareRecord(null); loadRecords(); }}
+        />
       )}
     </div>
   );

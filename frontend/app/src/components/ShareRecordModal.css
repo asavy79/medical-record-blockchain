@@ -1,0 +1,49 @@
+.doctor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px 0;
+  width: 100%;
+}
+
+.doctor-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: none;
+  width: 100%;
+  text-align: left;
+}
+
+.doctor-row:hover:not(.disabled) {
+  background: var(--surface2);
+  border-color: var(--border);
+}
+
+.doctor-row.selected {
+  background: var(--accent-dim);
+  border-color: rgba(79,110,247,0.35);
+}
+
+.doctor-row.disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.shared-badge {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(52,211,153,0.12);
+  color: var(--success);
+  border: 1px solid rgba(52,211,153,0.25);
+  padding: 3px 8px;
+  border-radius: 20px;
+}

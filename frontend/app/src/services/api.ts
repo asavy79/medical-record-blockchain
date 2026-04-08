@@ -49,6 +49,15 @@ export interface LoginResponse {
   role: 'patient' | 'doctor';
 }
 
+export interface CheckWalletResponse {
+  claimed: boolean;
+  role: string | null;
+}
+
+export function checkWallet(walletAddress: string): Promise<CheckWalletResponse> {
+  return request(`/auth/check-wallet?wallet_address=${encodeURIComponent(walletAddress)}`);
+}
+
 export function getChallenge(walletAddress: string): Promise<ChallengeResponse> {
   return request(`/auth/challenge?wallet_address=${encodeURIComponent(walletAddress)}`);
 }
@@ -221,4 +230,11 @@ export interface PermissionResponse {
 
 export function getRecordPermissions(patientId: string, recordId: string): Promise<PermissionResponse[]> {
   return request(`/patients/${patientId}/records/${recordId}/permissions`);
+}
+
+export function createPermission(patientId: string, recordId: string, doctorId: string): Promise<PermissionResponse> {
+  return request(`/patients/${patientId}/records/${recordId}/permissions`, {
+    method: 'POST',
+    body: JSON.stringify({ doctor_id: doctorId }),
+  });
 }

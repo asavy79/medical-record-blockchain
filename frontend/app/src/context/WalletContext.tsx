@@ -7,7 +7,6 @@ interface WalletState {
   provider: ethers.JsonRpcProvider | null;
   signer: ethers.Wallet | null;
   walletAddress: string | null;
-  privateKey: string | null;    // hex with 0x prefix
   publicKey: string | null;     // uncompressed hex (130 chars, no 0x)
 }
 
@@ -25,7 +24,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     provider: null,
     signer: null,
     walletAddress: null,
-    privateKey: null,
     publicKey: null,
   });
 
@@ -41,7 +39,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       provider,
       signer,
       walletAddress: account.address,
-      privateKey: account.privateKey,
       publicKey,
     });
   }, []);
@@ -51,7 +48,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       provider: null,
       signer: null,
       walletAddress: null,
-      privateKey: null,
       publicKey: null,
     });
   }, []);

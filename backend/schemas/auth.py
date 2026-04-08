@@ -16,3 +16,8 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     user_id: str
     role: str
+
+
+class CheckWalletResponse(BaseModel):
+    claimed: bool
+    role: str | None = None
