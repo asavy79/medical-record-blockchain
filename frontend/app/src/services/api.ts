@@ -154,8 +154,15 @@ export interface RecordResponse {
   created_at: string;
 }
 
-export function getRecords(patientId: string): Promise<RecordResponse[]> {
-  return request(`/patients/${patientId}/records`);
+export function getRecords(
+  patientId: string,
+  sharedWithDoctorId?: string,
+): Promise<RecordResponse[]> {
+  const q =
+    sharedWithDoctorId !== undefined
+      ? `?shared_with=${encodeURIComponent(sharedWithDoctorId)}`
+      : '';
+  return request(`/patients/${patientId}/records${q}`);
 }
 
 export function getRecord(patientId: string, recordId: string): Promise<RecordResponse> {

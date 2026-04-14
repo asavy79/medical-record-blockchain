@@ -1,7 +1,7 @@
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,16 +66,31 @@ async def create_record(
 @router.get("", response_model=list[RecordResponse])
 async def list_records(
     patient_id: uuid.UUID,
+    shared_with: uuid.UUID | None = Query(
+        default=None,
+        description="When set, only return records this doctor has been granted access to (patient role only).",
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     if current_user["role"] == "patient":
-        # Patient can see all their own records
+        # Patient can see all their own records, or filter to those shared with a specific doctor
         if current_user["id"] != str(patient_id):
             raise HTTPException(status_code=403, detail="Cannot view another patient's records")
-        result = await db.execute(
-            select(PatientRecord).where(PatientRecord.patient_id == patient_id)
-        )
+        if shared_with is not None:
+            result = await db.execute(
+                select(PatientRecord)
+                .join(RecordPermission, RecordPermission.record_id == PatientRecord.id)
+                .where(
+                    PatientRecord.patient_id == patient_id,
+                    RecordPermission.doctor_id == shared_with,
+                    RecordPermission.revoked_at.is_(None),
+                )
+            )
+        else:
+            result = await db.execute(
+                select(PatientRecord).where(PatientRecord.patient_id == patient_id)
+            )
     elif current_user["role"] == "doctor":
         # Doctor can only see records they have permission for
         from models.doctor import Doctor

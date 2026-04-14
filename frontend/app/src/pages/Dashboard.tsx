@@ -25,6 +25,11 @@ export default function Dashboard() {
   // Records state
   const [records, setRecords] = useState<api.RecordResponse[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
+  /** Patient: records granted to the doctor selected for the Shared tab (from API + permissions). */
+  const [sharedTabRecords, setSharedTabRecords] = useState<api.RecordResponse[]>([]);
+  const [loadingSharedTab, setLoadingSharedTab] = useState(false);
+  /** Patient: count of records shared with each connected doctor (for sidebar badges). */
+  const [peerSharedCounts, setPeerSharedCounts] = useState<Record<string, number>>({});
 
   // User name cache for invite sender display
   const [nameCache, setNameCache] = useState<Map<string, { name: string; role: string; sub: string }>>(new Map());
@@ -72,6 +77,57 @@ export default function Dashboard() {
     }
   }, [peers.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Patient: load records shared with the selected doctor (DB permissions) for the Shared tab
+  useEffect(() => {
+    if (!isPatient || !currentUser || tab !== 'shared' || !selectedPeer) {
+      setSharedTabRecords([]);
+      setLoadingSharedTab(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingSharedTab(true);
+    api
+      .getRecords(currentUser.id, selectedPeer.id)
+      .then(recs => {
+        if (!cancelled) {
+          setSharedTabRecords(recs);
+          setLoadingSharedTab(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSharedTabRecords([]);
+          setLoadingSharedTab(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isPatient, currentUser?.id, tab, selectedPeer?.id, records]);
+
+  // Patient: per-doctor shared record counts for sidebar badges
+  useEffect(() => {
+    if (!isPatient || !currentUser || peers.length === 0) {
+      setPeerSharedCounts({});
+      return;
+    }
+    let cancelled = false;
+    Promise.all(
+      peers.map(p =>
+        api.getRecords(currentUser.id, p.id).then(r => [p.id, r.length] as const),
+      ),
+    )
+      .then(entries => {
+        if (!cancelled) setPeerSharedCounts(Object.fromEntries(entries));
+      })
+      .catch(() => {
+        if (!cancelled) setPeerSharedCounts({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isPatient, currentUser?.id, peers, records]);
+
   // Resolve invite sender names
   useEffect(() => {
     async function resolveSenders() {
@@ -101,7 +157,9 @@ export default function Dashboard() {
   function getMainRecords(): api.RecordResponse[] {
     if (tab === 'all') return records;
     if (!selectedPeer) return [];
-    // Show records for the selected peer
+    // Patient: sidebar peers are doctors; shared list comes from permissions (see sharedTabRecords)
+    if (isPatient) return sharedTabRecords;
+    // Doctor: filter by selected patient
     return records.filter(r => r.patient_id === selectedPeer.id);
   }
 
@@ -111,8 +169,7 @@ export default function Dashboard() {
 
   function getPeerSharedCount(_peer: PeerInfo): number {
     if (isPatient) {
-      // For patients, count records shared with this doctor (approximation: all their records with permissions)
-      return records.length;
+      return peerSharedCounts[_peer.id] ?? 0;
     }
     return records.filter(r => r.patient_id === _peer.id).length;
   }
@@ -219,7 +276,7 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {loadingRecords ? (
+          {loadingRecords || (isPatient && tab === 'shared' && selectedPeer && loadingSharedTab) ? (
             <div className="dash-empty">
               <span className="spinner" />
               <p>Loading records...</p>
