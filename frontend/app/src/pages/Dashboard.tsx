@@ -1,100 +1,198 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { useConnections } from '../context/ConnectionContext';
+import { useConnections, type PeerInfo } from '../context/ConnectionContext';
 import Navbar from '../components/Navbar';
 import PrivateKeyModal from '../components/PrivateKeyModal';
 import InviteModal from '../components/InviteModal';
-import { records, users, type MedRecord, type User } from '../data/mockData';
+import UploadRecordModal from '../components/UploadRecordModal';
+import ShareRecordModal from '../components/ShareRecordModal';
+import * as api from '../services/api';
 import './Dashboard.css';
 
 type Tab = 'all' | 'shared';
 
 export default function Dashboard() {
   const { currentUser } = useAuth();
-  const { connections, sharedAccess, pendingInvitesFor, acceptInvite, declineInvite } = useConnections();
-  const [selectedPeer, setSelectedPeer] = useState<User | null>(null);
-  const [selectedRecord, setSelectedRecord] = useState<MedRecord | null>(null);
+  const { peers, pendingInvitesForMe, acceptInvite, declineInvite, refresh } = useConnections();
+
+  const [selectedPeer, setSelectedPeer] = useState<PeerInfo | null>(null);
+  const [selectedRecord, setSelectedRecord] = useState<api.RecordResponse | null>(null);
   const [tab, setTab] = useState<Tab>('all');
   const [showInvite, setShowInvite] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
+  const [shareRecord, setShareRecord] = useState<api.RecordResponse | null>(null);
+
+  // Records state
+  const [records, setRecords] = useState<api.RecordResponse[]>([]);
+  const [loadingRecords, setLoadingRecords] = useState(false);
+  /** Patient: records granted to the doctor selected for the Shared tab (from API + permissions). */
+  const [sharedTabRecords, setSharedTabRecords] = useState<api.RecordResponse[]>([]);
+  const [loadingSharedTab, setLoadingSharedTab] = useState(false);
+  /** Patient: count of records shared with each connected doctor (for sidebar badges). */
+  const [peerSharedCounts, setPeerSharedCounts] = useState<Record<string, number>>({});
+
+  // User name cache for invite sender display
+  const [nameCache, setNameCache] = useState<Map<string, { name: string; role: string; sub: string }>>(new Map());
+
+  const isPatient = currentUser?.role === 'patient';
+  const pendingInvites = pendingInvitesForMe();
+
+  // Load connections + records on mount and when user changes
+  useEffect(() => {
+    if (!currentUser) return;
+    refresh();
+    loadRecords();
+  }, [currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadRecords() {
+    if (!currentUser) return;
+    setLoadingRecords(true);
+    try {
+      if (isPatient) {
+        const recs = await api.getRecords(currentUser.id);
+        setRecords(recs);
+      } else {
+        // Doctor: load records from each connected patient
+        const allRecs: api.RecordResponse[] = [];
+        for (const peer of peers) {
+          try {
+            const recs = await api.getRecords(peer.id);
+            allRecs.push(...recs);
+          } catch {
+            // no access
+          }
+        }
+        setRecords(allRecs);
+      }
+    } catch {
+      // backend may be down
+    }
+    setLoadingRecords(false);
+  }
+
+  // Re-load records when peers change (for doctors)
+  useEffect(() => {
+    if (!isPatient && currentUser) {
+      loadRecords();
+    }
+  }, [peers.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Patient: load records shared with the selected doctor (DB permissions) for the Shared tab
+  useEffect(() => {
+    if (!isPatient || !currentUser || tab !== 'shared' || !selectedPeer) {
+      setSharedTabRecords([]);
+      setLoadingSharedTab(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingSharedTab(true);
+    api
+      .getRecords(currentUser.id, selectedPeer.id)
+      .then(recs => {
+        if (!cancelled) {
+          setSharedTabRecords(recs);
+          setLoadingSharedTab(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSharedTabRecords([]);
+          setLoadingSharedTab(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isPatient, currentUser?.id, tab, selectedPeer?.id, records]);
+
+  // Patient: per-doctor shared record counts for sidebar badges
+  useEffect(() => {
+    if (!isPatient || !currentUser || peers.length === 0) {
+      setPeerSharedCounts({});
+      return;
+    }
+    let cancelled = false;
+    Promise.all(
+      peers.map(p =>
+        api.getRecords(currentUser.id, p.id).then(r => [p.id, r.length] as const),
+      ),
+    )
+      .then(entries => {
+        if (!cancelled) setPeerSharedCounts(Object.fromEntries(entries));
+      })
+      .catch(() => {
+        if (!cancelled) setPeerSharedCounts({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isPatient, currentUser?.id, peers, records]);
+
+  // Resolve invite sender names
+  useEffect(() => {
+    async function resolveSenders() {
+      const newCache = new Map(nameCache);
+      for (const inv of pendingInvites) {
+        if (newCache.has(inv.fromWallet)) continue;
+        try {
+          const d = await api.getDoctorByWallet(inv.fromWallet);
+          newCache.set(inv.fromWallet, { name: d.name, role: 'doctor', sub: d.specialty ?? '' });
+        } catch {
+          try {
+            const p = await api.getPatientByWallet(inv.fromWallet);
+            newCache.set(inv.fromWallet, { name: p.name, role: 'patient', sub: '' });
+          } catch {
+            newCache.set(inv.fromWallet, { name: inv.fromWallet.slice(0, 10) + '...', role: inv.fromRole, sub: '' });
+          }
+        }
+      }
+      setNameCache(newCache);
+    }
+    if (pendingInvites.length > 0) resolveSenders();
+  }, [pendingInvites.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!currentUser) return null;
-  const isPatient = currentUser.role === 'patient';
 
-  const pendingInvites = pendingInvitesFor(currentUser.id);
-
-  // ── Records visible on the main panel ──────────────────────────────────────
-  function getMainRecords(): MedRecord[] {
-    if (tab === 'all') {
-      if (isPatient) return records.filter(r => r.patientId === currentUser!.id);
-      return sharedAccess
-        .filter(sa => sa.doctorId === currentUser!.id)
-        .flatMap(sa => records.filter(r => sa.recordIds.includes(r.id)));
-    }
+  // Records visible on the main panel
+  function getMainRecords(): api.RecordResponse[] {
+    if (tab === 'all') return records;
     if (!selectedPeer) return [];
+    // Patient: sidebar peers are doctors; shared list comes from permissions (see sharedTabRecords)
+    if (isPatient) return sharedTabRecords;
+    // Doctor: filter by selected patient
+    return records.filter(r => r.patient_id === selectedPeer.id);
+  }
+
+  function getSenderInfo(wallet: string) {
+    return nameCache.get(wallet) ?? { name: wallet.slice(0, 10) + '...', role: 'patient', sub: '' };
+  }
+
+  function getPeerSharedCount(_peer: PeerInfo): number {
     if (isPatient) {
-      const access = sharedAccess.find(
-        sa => sa.patientId === currentUser!.id && sa.doctorId === selectedPeer.id,
-      );
-      return access ? records.filter(r => access.recordIds.includes(r.id)) : [];
-    } else {
-      const access = sharedAccess.find(
-        sa => sa.doctorId === currentUser!.id && sa.patientId === selectedPeer.id,
-      );
-      return access ? records.filter(r => access.recordIds.includes(r.id)) : [];
+      return peerSharedCounts[_peer.id] ?? 0;
     }
+    return records.filter(r => r.patient_id === _peer.id).length;
   }
 
-  // ── Sidebar peers (connected) ───────────────────────────────────────────────
-  function getPeers(): User[] {
-    if (isPatient) {
-      const doctorIds = connections
-        .filter(c => c.patientId === currentUser!.id)
-        .map(c => c.doctorId);
-      return users.filter(u => doctorIds.includes(u.id));
-    } else {
-      const patientIds = connections
-        .filter(c => c.doctorId === currentUser!.id)
-        .map(c => c.patientId);
-      return users.filter(u => patientIds.includes(u.id));
-    }
-  }
-
-  function getSharedCount(peer: User): number {
-    if (isPatient) {
-      return sharedAccess.find(
-        sa => sa.patientId === currentUser!.id && sa.doctorId === peer.id,
-      )?.recordIds.length ?? 0;
-    } else {
-      return sharedAccess.find(
-        sa => sa.doctorId === currentUser!.id && sa.patientId === peer.id,
-      )?.recordIds.length ?? 0;
-    }
-  }
-
-  function getSenderName(fromId: string) {
-    return users.find(u => u.id === fromId)?.name ?? 'Someone';
-  }
-
-  function getSenderSub(fromId: string) {
-    const u = users.find(u => u.id === fromId);
-    return u?.specialty ?? u?.dob ?? '';
-  }
-
-  function getSenderInitial(fromId: string) {
-    const u = users.find(u => u.id === fromId);
-    return (u?.name ?? '?').replace('Dr. ', '').charAt(0);
-  }
-
-  function getSenderRole(fromId: string): 'doctor' | 'patient' {
-    return users.find(u => u.id === fromId)?.role ?? 'patient';
+  function getPatientName(patientId: string): string {
+    const peer = peers.find(p => p.id === patientId);
+    return peer?.name ?? 'Patient';
   }
 
   const mainRecords = getMainRecords();
-  const peers = getPeers();
 
-  function handlePeerClick(peer: User) {
+  function handlePeerClick(peer: PeerInfo) {
     setSelectedPeer(peer);
     setTab('shared');
+  }
+
+  async function handleAccept(inviteId: string, fromWallet: string) {
+    await acceptInvite(inviteId, fromWallet);
+    loadRecords();
+  }
+
+  async function handleDecline(inviteId: string) {
+    await declineInvite(inviteId);
   }
 
   const recordTypeIcon = (type: string) => {
@@ -121,8 +219,14 @@ export default function Dashboard() {
     );
   };
 
-  function getPatientName(patientId: string) {
-    return users.find(u => u.id === patientId)?.name ?? 'Unknown';
+  function formatSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function formatDate(iso: string): string {
+    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   }
 
   return (
@@ -130,7 +234,7 @@ export default function Dashboard() {
       <Navbar />
       <div className="dash-body">
 
-        {/* ── Main Panel ──────────────────────────────────────────────────── */}
+        {/* Main Panel */}
         <main className="dash-main">
           <div className="dash-main-header">
             <div>
@@ -140,10 +244,20 @@ export default function Dashboard() {
               <p className="dash-greeting-sub">
                 {isPatient
                   ? `Welcome back, ${currentUser.name.split(' ')[0]}`
-                  : `${currentUser.specialty} · ${currentUser.name}`}
+                  : `${currentUser.specialty ?? ''} · ${currentUser.name}`}
               </p>
             </div>
             <div className="dash-tabs">
+              {isPatient && (
+                <button className="dash-tab upload-btn" onClick={() => setShowUpload(true)}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
+                  Upload Record
+                </button>
+              )}
               <button
                 className={`dash-tab ${tab === 'all' ? 'active' : ''}`}
                 onClick={() => { setTab('all'); setSelectedPeer(null); }}
@@ -162,7 +276,12 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {mainRecords.length === 0 ? (
+          {loadingRecords || (isPatient && tab === 'shared' && selectedPeer && loadingSharedTab) ? (
+            <div className="dash-empty">
+              <span className="spinner" />
+              <p>Loading records...</p>
+            </div>
+          ) : mainRecords.length === 0 ? (
             <div className="dash-empty">
               <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.2">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -170,23 +289,25 @@ export default function Dashboard() {
               </svg>
               <p>{tab === 'shared' && !selectedPeer
                 ? 'Select a person from the sidebar to see shared records.'
-                : 'No records found.'}</p>
+                : isPatient
+                  ? 'No records yet. Upload your first medical record!'
+                  : 'No records found.'}</p>
             </div>
           ) : (
             <div className="records-grid">
               {mainRecords.map(rec => (
                 <button key={rec.id} className="record-card" onClick={() => setSelectedRecord(rec)}>
                   <div className="record-card-top">
-                    <div className="record-icon">{recordTypeIcon(rec.type)}</div>
-                    <span className="record-type-badge">{rec.type}</span>
+                    <div className="record-icon">{recordTypeIcon(rec.metadata.category)}</div>
+                    <span className="record-type-badge">{rec.metadata.category}</span>
                   </div>
-                  <h3 className="record-title">{rec.title}</h3>
+                  <h3 className="record-title">{rec.metadata.filename}</h3>
                   {!isPatient && (
-                    <p className="record-patient-name">{getPatientName(rec.patientId)}</p>
+                    <p className="record-patient-name">{getPatientName(rec.patient_id)}</p>
                   )}
                   <div className="record-meta">
-                    <span>{rec.date}</span>
-                    <span>{rec.size}</span>
+                    <span>{formatDate(rec.created_at)}</span>
+                    <span>{formatSize(rec.metadata.size_bytes)}</span>
                   </div>
                   <div className="record-lock">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -195,13 +316,27 @@ export default function Dashboard() {
                     </svg>
                     Click to decrypt
                   </div>
+                  {isPatient && (
+                    <button
+                      className="share-record-btn"
+                      onClick={(e) => { e.stopPropagation(); setShareRecord(rec); }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                        <circle cx="9" cy="7" r="4"/>
+                        <line x1="19" y1="8" x2="19" y2="14"/>
+                        <line x1="22" y1="11" x2="16" y2="11"/>
+                      </svg>
+                      Share
+                    </button>
+                  )}
                 </button>
               ))}
             </div>
           )}
         </main>
 
-        {/* ── Sidebar ─────────────────────────────────────────────────────── */}
+        {/* Sidebar */}
         <aside className="dash-sidebar">
 
           {/* Pending invites */}
@@ -211,29 +346,32 @@ export default function Dashboard() {
                 <span className="pending-title">Pending Invites</span>
                 <span className="pending-badge">{pendingInvites.length}</span>
               </div>
-              {pendingInvites.map(inv => (
-                <div key={inv.id} className="pending-card">
-                  <div className={`peer-avatar ${getSenderRole(inv.fromId)}`}>
-                    {getSenderInitial(inv.fromId)}
+              {pendingInvites.map(inv => {
+                const info = getSenderInfo(inv.fromWallet);
+                return (
+                  <div key={inv.id} className="pending-card">
+                    <div className={`peer-avatar ${info.role}`}>
+                      {info.name.replace('Dr. ', '').charAt(0)}
+                    </div>
+                    <div className="peer-info">
+                      <span className="peer-name">{info.name}</span>
+                      <span className="peer-sub">{info.sub}</span>
+                    </div>
+                    <div className="pending-actions">
+                      <button className="pending-accept" onClick={() => handleAccept(inv.id, inv.fromWallet)} title="Accept">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <path d="M20 6L9 17l-5-5"/>
+                        </svg>
+                      </button>
+                      <button className="pending-decline" onClick={() => handleDecline(inv.id)} title="Decline">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                      </button>
+                    </div>
                   </div>
-                  <div className="peer-info">
-                    <span className="peer-name">{getSenderName(inv.fromId)}</span>
-                    <span className="peer-sub">{getSenderSub(inv.fromId)}</span>
-                  </div>
-                  <div className="pending-actions">
-                    <button className="pending-accept" onClick={() => acceptInvite(inv.id)} title="Accept">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                        <path d="M20 6L9 17l-5-5"/>
-                      </svg>
-                    </button>
-                    <button className="pending-decline" onClick={() => declineInvite(inv.id)} title="Decline">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -253,14 +391,14 @@ export default function Dashboard() {
                 className={`peer-card ${selectedPeer?.id === peer.id ? 'active' : ''}`}
                 onClick={() => handlePeerClick(peer)}
               >
-                <div className={`peer-avatar ${isPatient ? 'doctor' : 'patient'}`}>
+                <div className={`peer-avatar ${peer.role}`}>
                   {peer.name.replace('Dr. ', '').charAt(0)}
                 </div>
                 <div className="peer-info">
                   <span className="peer-name">{peer.name}</span>
-                  <span className="peer-sub">{peer.specialty ?? peer.dob ?? ''}</span>
+                  <span className="peer-sub">{peer.specialty ?? ''}</span>
                 </div>
-                <div className="peer-badge">{getSharedCount(peer)} files</div>
+                <div className="peer-badge">{getPeerSharedCount(peer)} files</div>
               </button>
             ))}
           </div>
@@ -284,7 +422,17 @@ export default function Dashboard() {
         <PrivateKeyModal record={selectedRecord} onClose={() => setSelectedRecord(null)} />
       )}
       {showInvite && (
-        <InviteModal onClose={() => setShowInvite(false)} />
+        <InviteModal onClose={() => { setShowInvite(false); refresh(); }} />
+      )}
+      {showUpload && (
+        <UploadRecordModal onClose={() => { setShowUpload(false); loadRecords(); }} />
+      )}
+      {shareRecord && (
+        <ShareRecordModal
+          record={shareRecord}
+          onClose={() => setShareRecord(null)}
+          onShared={() => { setShareRecord(null); loadRecords(); }}
+        />
       )}
     </div>
   );

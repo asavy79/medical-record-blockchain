@@ -1,0 +1,10 @@
+fastapi>=0.115
+uvicorn[standard]>=0.34
+sqlalchemy[asyncio]>=2.0
+asyncpg>=0.30
+pydantic[email]>=2.0
+pydantic-settings>=2.0
+python-jose[cryptography]>=3.3
+python-multipart>=0.0.9
+eth-account>=0.13
+web3>=7.0

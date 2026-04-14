@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { WalletProvider } from './context/WalletContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ConnectionProvider } from './context/ConnectionContext';
 import SignIn from './pages/SignIn';
@@ -33,12 +34,14 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <ConnectionProvider>
-        <BrowserRouter>
-          <AppRoutes />
-        </BrowserRouter>
-      </ConnectionProvider>
-    </AuthProvider>
+    <WalletProvider>
+      <AuthProvider>
+        <ConnectionProvider>
+          <BrowserRouter>
+            <AppRoutes />
+          </BrowserRouter>
+        </ConnectionProvider>
+      </AuthProvider>
+    </WalletProvider>
   );
 }

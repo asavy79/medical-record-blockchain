@@ -1,29 +1,123 @@
-import { useState, type FormEvent } from 'react';
+import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useWallet } from '../context/WalletContext';
+import * as api from '../services/api';
 import './SignIn.css';
 
+type Step = 'select-wallet' | 'logging-in' | 'register';
+
 export default function SignIn() {
-  const { login } = useAuth();
+  const { login, registerPatient, registerDoctor } = useAuth();
+  const { connectAnvil, walletAddress, anvilAccounts } = useWallet();
   const navigate = useNavigate();
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+
+  const [step, setStep] = useState<Step>('select-wallet');
+  const [selectedIdx, setSelectedIdx] = useState<number>(0);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  function handleSubmit(e: FormEvent) {
-    e.preventDefault();
+  // Wallet claim status: address → role (or null if unclaimed)
+  const [claimedMap, setClaimedMap] = useState<Map<string, string | null>>(new Map());
+  const [loadingClaims, setLoadingClaims] = useState(true);
+
+  // Registration form state
+  const [regRole, setRegRole] = useState<'patient' | 'doctor'>('patient');
+  const [regName, setRegName] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regSpecialty, setRegSpecialty] = useState('');
+
+  // Check which Anvil accounts are already claimed
+  useEffect(() => {
+    async function checkClaims() {
+      setLoadingClaims(true);
+      const map = new Map<string, string | null>();
+      const results = await Promise.allSettled(
+        anvilAccounts.map(acc => api.checkWallet(acc.address))
+      );
+      results.forEach((result, i) => {
+        const addr = anvilAccounts[i].address.toLowerCase();
+        if (result.status === 'fulfilled' && result.value.claimed) {
+          map.set(addr, result.value.role);
+        } else {
+          map.set(addr, null);
+        }
+      });
+      setClaimedMap(map);
+      setLoadingClaims(false);
+    }
+    checkClaims();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selectedAccount = anvilAccounts[selectedIdx];
+  const selectedClaimed = claimedMap.get(selectedAccount?.address.toLowerCase()) ?? null;
+
+  async function handleConnect() {
     setError('');
     setLoading(true);
-    setTimeout(() => {
-      const ok = login(username.trim(), password);
+    try {
+      connectAnvil(selectedIdx);
+
+      // Small delay to let WalletContext propagate into AuthContext
+      await new Promise(r => setTimeout(r, 100));
+    } catch {
+      setError('Failed to connect wallet.');
+      setLoading(false);
+      return;
+    }
+
+    setStep('logging-in');
+    setLoading(false);
+  }
+
+  // This runs when step transitions to 'logging-in'
+  // We use a separate effect-like approach via the step state
+  async function handleLogin() {
+    setError('');
+    setLoading(true);
+    try {
+      const ok = await login();
       if (ok) {
         navigate('/dashboard');
       } else {
-        setError('Invalid username or password.');
+        // User not registered → show registration form
+        setStep('register');
       }
-      setLoading(false);
-    }, 600);
+    } catch {
+      setStep('register');
+    }
+    setLoading(false);
+  }
+
+  async function handleRegister(e: FormEvent) {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      let ok: boolean;
+      if (regRole === 'patient') {
+        ok = await registerPatient(regName, regEmail);
+      } else {
+        ok = await registerDoctor(regName, regEmail, regSpecialty || undefined);
+      }
+      if (ok) {
+        navigate('/dashboard');
+      } else {
+        setError('Registration failed. Check your details.');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('409')) {
+        setError('This wallet is already claimed by another user.');
+      } else {
+        setError('Registration failed. Is the backend running?');
+      }
+    }
+    setLoading(false);
+  }
+
+  function truncAddr(addr: string) {
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
   }
 
   return (
@@ -40,50 +134,144 @@ export default function SignIn() {
           <span className="signin-logo-text">MedVault</span>
         </div>
 
-        <h1 className="signin-title">Welcome back</h1>
-        <p className="signin-subtitle">Sign in to your secure health portal</p>
+        {/* ── Step 1: Select Anvil wallet ──────────────────────────── */}
+        {step === 'select-wallet' && (
+          <>
+            <h1 className="signin-title">Connect Wallet</h1>
+            <p className="signin-subtitle">Select an Anvil account to sign in</p>
 
-        <form className="signin-form" onSubmit={handleSubmit}>
-          <div className="field-group">
-            <label className="field-label">Username</label>
-            <input
-              className="field-input"
-              type="text"
-              placeholder="Enter your username"
-              value={username}
-              onChange={e => setUsername(e.target.value)}
-              autoComplete="username"
-              required
-            />
-          </div>
+            <div className="signin-form">
+              <div className="field-group">
+                <label className="field-label">Anvil Account</label>
+                <select
+                  className="field-input"
+                  value={selectedIdx}
+                  onChange={e => setSelectedIdx(Number(e.target.value))}
+                >
+                  {anvilAccounts.map((acc, i) => {
+                    const claimed = claimedMap.get(acc.address.toLowerCase());
+                    return (
+                      <option key={i} value={i}>
+                        Account {i} — {truncAddr(acc.address)}
+                        {claimed ? ` (${claimed})` : ' (unclaimed)'}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
 
-          <div className="field-group">
-            <label className="field-label">Password</label>
-            <input
-              className="field-input"
-              type="password"
-              placeholder="Enter your password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              autoComplete="current-password"
-              required
-            />
-          </div>
+              {error && <div className="signin-error">{error}</div>}
 
-          {error && <div className="signin-error">{error}</div>}
+              <button
+                className="signin-btn"
+                onClick={handleConnect}
+                disabled={loading || loadingClaims}
+              >
+                {loading || loadingClaims
+                  ? <span className="spinner" />
+                  : selectedClaimed
+                    ? 'Sign In'
+                    : 'Connect Wallet'}
+              </button>
+            </div>
 
-          <button className="signin-btn" type="submit" disabled={loading}>
-            {loading ? <span className="spinner" /> : 'Sign In'}
-          </button>
-        </form>
+            <div className="signin-hint">
+              <p>Local Development</p>
+              <div className="hint-grid">
+                <span className="hint-tag patient">Uses Anvil pre-funded accounts</span>
+                <span className="hint-tag doctor">No MetaMask required</span>
+              </div>
+            </div>
+          </>
+        )}
 
-        <div className="signin-hint">
-          <p>Demo accounts:</p>
-          <div className="hint-grid">
-            <span className="hint-tag patient">Patient: john.doe / patient123</span>
-            <span className="hint-tag doctor">Doctor: dr.patel / doctor123</span>
-          </div>
-        </div>
+        {/* ── Step 2: Logging in (auto-signs challenge) ────────────── */}
+        {step === 'logging-in' && (
+          <>
+            <h1 className="signin-title">Signing In</h1>
+            <p className="signin-subtitle">
+              Connected as {walletAddress ? truncAddr(walletAddress) : '...'}
+            </p>
+
+            <div className="signin-form">
+              {error && <div className="signin-error">{error}</div>}
+
+              {!loading && (
+                <button className="signin-btn" onClick={handleLogin}>
+                  Sign Challenge &amp; Login
+                </button>
+              )}
+              {loading && (
+                <button className="signin-btn" disabled>
+                  <span className="spinner" />
+                </button>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* ── Step 3: Registration form ────────────────────────────── */}
+        {step === 'register' && (
+          <>
+            <h1 className="signin-title">Register</h1>
+            <p className="signin-subtitle">
+              Wallet {walletAddress ? truncAddr(walletAddress) : ''} not found — create an account
+            </p>
+
+            <form className="signin-form" onSubmit={handleRegister}>
+              <div className="field-group">
+                <label className="field-label">I am a</label>
+                <select className="field-input" value={regRole} onChange={e => setRegRole(e.target.value as 'patient' | 'doctor')}>
+                  <option value="patient">Patient</option>
+                  <option value="doctor">Doctor</option>
+                </select>
+              </div>
+
+              <div className="field-group">
+                <label className="field-label">Full Name</label>
+                <input
+                  className="field-input"
+                  type="text"
+                  placeholder={regRole === 'doctor' ? 'Dr. Jane Smith' : 'Jane Smith'}
+                  value={regName}
+                  onChange={e => setRegName(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="field-group">
+                <label className="field-label">Email</label>
+                <input
+                  className="field-input"
+                  type="email"
+                  placeholder="jane@example.com"
+                  value={regEmail}
+                  onChange={e => setRegEmail(e.target.value)}
+                  required
+                />
+              </div>
+
+              {regRole === 'doctor' && (
+                <div className="field-group">
+                  <label className="field-label">Specialty</label>
+                  <input
+                    className="field-input"
+                    type="text"
+                    placeholder="Cardiology"
+                    value={regSpecialty}
+                    onChange={e => setRegSpecialty(e.target.value)}
+                  />
+                </div>
+              )}
+
+              {error && <div className="signin-error">{error}</div>}
+
+              <button className="signin-btn" type="submit" disabled={loading}>
+                {loading ? <span className="spinner" /> : 'Create Account & Sign In'}
+              </button>
+            </form>
+          </>
+        )}
       </div>
     </div>
   );
