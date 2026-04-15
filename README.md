@@ -62,3 +62,46 @@ A secure, zero-knowledge medical record sharing platform. This system utilizes a
 - **Backend:** Python 3.10+, FastAPI, `web3.py`, `eciespy`
 - **Database:** PostgreSQL
 - **Frontend:** React (TypeScript), `ethers.js`
+
+
+## Run the project
+
+### Prerequisites
+
+- **Docker** and **Docker Compose**
+- **Foundry** (`curl -L https://foundry.paradigm.xyz | bash` then `foundryup`) — only needed to start Anvil and deploy the contract via `start-blockchain.sh`
+
+### 1. Local blockchain and contract
+
+From the repo root:
+
+```bash
+chmod +x start-blockchain.sh   # once, if needed
+./start-blockchain.sh
+```
+
+This starts **Anvil** on port `8545`, deploys **MedicalAccessRegistry**, and appends `CONTRACT_ADDRESS=<address>` to **`.env`** in the project root. Leave this terminal running (Anvil stays up).
+
+If you change the contract and redeploy, run **`docker compose restart backend frontend`** (or `docker compose up --build` again) so containers pick up the new address from `.env`.
+
+### 2. App stack (API, DB, UI)
+
+In a **second** terminal:
+
+```bash
+docker compose up --build
+```
+
+Wait until Postgres, the FastAPI backend, and the Vite frontend are healthy.
+
+| Service    | URL |
+|-----------|-----|
+| Frontend  | [http://localhost:5173](http://localhost:5173) |
+| Backend API | [http://localhost:8000](http://localhost:8000) |
+| Anvil RPC | `http://localhost:8545` (must be running from step 1) |
+
+The backend uses `host.docker.internal:8545` to reach Anvil on your machine.
+
+### 3. Sign in
+
+Open the frontend, choose an **Anvil test account** (matches the keys printed when Anvil starts), then register or sign in with your name, email, and role (patient or doctor).
